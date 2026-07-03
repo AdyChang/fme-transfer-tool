@@ -1,0 +1,13 @@
+substitutions:
+  _IMAGE_TAG: latest
+
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - build
+    - -t
+    - asia-east1-docker.pkg.dev/l000-493901/cloud-run-source-deploy/fme-transfer-tool:${_IMAGE_TAG}
+    - .
+
+images:
+- asia-east1-docker.pkg.dev/l000-493901/cloud-run-source-deploy/fme-transfer-tool:${_IMAGE_TAG}

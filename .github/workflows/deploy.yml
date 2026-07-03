@@ -10,6 +10,7 @@ env:
   REGION: asia-east1
   PROJECT_ID: l000-493901
   SERVICE_NAME: fme-transfer-tool
+  REGISTRY: asia-east1-docker.pkg.dev/l000-493901/cloud-run-source-deploy
 
 jobs:
   deploy:
@@ -43,19 +44,44 @@ jobs:
           workload_identity_provider: "projects/146561234228/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
           service_account: "github-actions-sa@l000-493901.iam.gserviceaccount.com"
 
-      - name: Deploy to Cloud Run
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build image via Cloud Build
+        id: build
+        run: |
+          SHORT_SHA="${GITHUB_SHA::8}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.SERVICE_NAME }}:${SHORT_SHA}"
+          BUILD_ID=$(gcloud builds submit . \
+            --config cloudbuild.yaml \
+            --project=${{ env.PROJECT_ID }} \
+            --region=${{ env.REGION }} \
+            --substitutions=_IMAGE_TAG=${SHORT_SHA} \
+            --format="value(id)" 2>&1 | tail -1)
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "Built image: $IMAGE (build: $BUILD_ID)"
+
+      - name: Deploy to Cloud Run (no-traffic)
         id: deploy
-        uses: google-github-actions/deploy-cloudrun@v3
-        with:
-          service: ${{ steps.svc.outputs.name }}
-          region: ${{ env.REGION }}
-          project_id: ${{ env.PROJECT_ID }}
-          source: .
-          flags: --no-invoker-iam-check
+        run: |
+          gcloud run deploy ${{ steps.svc.outputs.name }} \
+            --image "${{ steps.build.outputs.image }}" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --no-invoker-iam-check \
+            --no-traffic
+          URL=$(gcloud run services describe ${{ steps.svc.outputs.name }} \
+            --region=${{ env.REGION }} --project=${{ env.PROJECT_ID }} \
+            --format="value(status.url)")
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Show deployed URL
         run: |
           echo "========================================="
           echo "Deployed! Service: ${{ steps.svc.outputs.name }}"
           echo "URL: ${{ steps.deploy.outputs.url }}"
+          echo "Image: ${{ steps.build.outputs.image }}"
+          echo "Note: Traffic is at 0% pending vulnerability scan."
+          echo "Open traffic via GCP Console after scan passes."
           echo "========================================="
