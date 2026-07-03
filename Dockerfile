@@ -1,5 +1,5 @@
 FROM nginx:alpine
-RUN apk upgrade --no-cache
+RUN apk upgrade --no-cache openssl expat
 COPY . /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080
