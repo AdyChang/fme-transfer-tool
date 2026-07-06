@@ -873,7 +873,7 @@ function parseInventory(rows) {
     `✅ ${S.categories.length} 個品類`,
     isSingle ? '📌 單倉格式（已依分倉規則拆算）' : `📌 多倉格式（${knownPlants.join('、')}）`,
   ];
-  if (colCat) msgParts.push(`✅ 大分類欄：${colCat}`);
+  if (colCat) msgParts.push(`✅ 大分類欄：${escHtml(colCat)}`);
   if (!colPeriod || !colArea || !colProject || !colChannel) {
     msgParts.push('⚠️ 部分欄位未偵測到（期別/庫區/專案別/通路別），匯出調撥單對應欄位將留空');
   }
