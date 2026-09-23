@@ -1,8 +1,9 @@
 # generated-by: github-action-n
-# version: 2.1.8
+# version: 2.1.9
 name: Deploy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -77,12 +78,97 @@ jobs:
             --format="value(status.url)")
           echo "url=$URL" >> $GITHUB_OUTPUT
 
+      - name: Get deployed image digest
+        id: image
+        run: |
+          REVISION=$(gcloud run services describe ${{ steps.svc.outputs.name }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format="value(status.latestCreatedRevisionName)")
+          IMAGE_REF=$(gcloud run revisions describe $REVISION \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format="value(spec.containers[0].image)")
+          IMAGE_BASE=$(echo "$IMAGE_REF" | sed 's/@sha256:.*//' | sed 's/:.*//')
+          DIGEST=$(gcloud artifacts docker images describe "$IMAGE_REF" \
+            --format="value(image_summary.digest)" 2>/dev/null || echo "")
+          if [ -z "$DIGEST" ]; then
+            RESOURCE_URL="https://$IMAGE_REF"
+          else
+            RESOURCE_URL="https://${IMAGE_BASE}@${DIGEST}"
+          fi
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+          echo "resource_url=$RESOURCE_URL" >> $GITHUB_OUTPUT
+          echo "Deployed revision: $REVISION"
+          echo "Resource URL: $RESOURCE_URL"
+
+      - name: Wait for container scan results
+        id: scan
+        run: |
+          PROJECT="${{ env.PROJECT_ID }}"
+          RESOURCE_URL="${{ steps.image.outputs.resource_url }}"
+          MAX_WAIT=900
+          INTERVAL=30
+          ELAPSED=0
+          echo "Waiting for container scan results..."
+          echo "Target: $RESOURCE_URL"
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+            TOKEN=$(gcloud auth print-access-token)
+            DISCOVERY=$(curl -sf \
+              -H "Authorization: Bearer $TOKEN" \
+              --get \
+              --data-urlencode "filter=kind=\"DISCOVERY\" AND resourceUri=\"${RESOURCE_URL}\"" \
+              "https://containeranalysis.googleapis.com/v1/projects/${PROJECT}/occurrences" \
+              2>/dev/null || echo "")
+            STATUS=$(echo "$DISCOVERY" | python3 -c "import sys,json; d=json.load(sys.stdin); os=d.get('occurrences',[]); print(os[0].get('discovery',{}).get('analysisStatus','') if os else '')" 2>/dev/null || echo "")
+            echo "Discovery status: $STATUS (${ELAPSED}s elapsed)"
+            if [ "$STATUS" = "FINISHED_SUCCESS" ] || [ "$STATUS" = "FINISHED_FAILED" ]; then
+              echo "Scan complete!"
+              VULN=$(curl -sf \
+                -H "Authorization: Bearer $TOKEN" \
+                --get \
+                --data-urlencode "filter=kind=\"VULNERABILITY\" AND resourceUri=\"${RESOURCE_URL}\"" \
+                "https://containeranalysis.googleapis.com/v1/projects/${PROJECT}/occurrences" \
+                2>/dev/null || echo "")
+              COUNT=$(echo "$VULN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('occurrences',[])))" 2>/dev/null || echo "0")
+              HIGH=$(echo "$VULN" | python3 -c "import sys,json;d=json.load(sys.stdin);print(sum(1 for o in d.get('occurrences',[]) if any(p.get('fixedVersion',{}).get('name','') not in ['','none'] for p in o.get('vulnerability',{}).get('packageIssue',[]))))" 2>/dev/null || echo "0")
+              WARN=$(echo "$VULN" | python3 -c "import sys,json;d=json.load(sys.stdin);print(sum(1 for o in d.get('occurrences',[]) if not any(p.get('fixedVersion',{}).get('name','') not in ['','none'] for p in o.get('vulnerability',{}).get('packageIssue',[]))))" 2>/dev/null || echo "0")
+              echo "Found $COUNT vulnerabilities: $HIGH blocking (fix available), $WARN warning-only (no upstream fix)."
+              if [ "$HIGH" -gt 0 ]; then
+                echo "=== Blocking Vulnerabilities ==="
+                echo "$VULN" | python3 -c "import sys,json;d=json.load(sys.stdin);[print(o.get('vulnerability',{}).get('severity',''),o.get('vulnerability',{}).get('shortDescription',''),p.get('affectedPackage',''),p.get('affectedVersion',{}).get('name',''),'->',p.get('fixedVersion',{}).get('name','none')) for o in d.get('occurrences',[]) for p in o.get('vulnerability',{}).get('packageIssue',[])]" 2>/dev/null || true
+                echo "CONTAINER_SCAN_PASSED=false" >> $GITHUB_OUTPUT
+                exit 1
+              else
+                echo "CONTAINER_SCAN_PASSED=true" >> $GITHUB_OUTPUT
+                break
+              fi
+            fi
+          done
+
+      # 容器掃描通過後自動切換 100% 流量；未通過時上一步已 exit 1，流量維持舊版
+      - name: Switch traffic to new revision (100%)
+        if: steps.scan.outputs.CONTAINER_SCAN_PASSED == 'true'
+        run: |
+          SERVICE="${{ steps.svc.outputs.name }}"
+          REVISION="${{ steps.image.outputs.revision }}"
+          PREV=$(gcloud run services describe "$SERVICE" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format=json | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((t.get('revisionName','') for t in d.get('status',{}).get('traffic',[]) if t.get('percent')),''))" 2>/dev/null || echo "")
+          gcloud run services update-traffic "$SERVICE" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --to-revisions="${REVISION}=100"
+          echo "=================================================="
+          echo "掃描通過，已將 100% 流量切換至 ${REVISION}"
+          echo "切換前版本：${PREV}"
+          echo "若需回復：Actions -> Switch Traffic -> revision 填 ${PREV}"
+          echo "=================================================="
+
       - name: Show deployed URL
         run: |
-          echo "========================================="
-          echo "Deployed! Service: ${{ steps.svc.outputs.name }}"
-          echo "URL: ${{ steps.deploy.outputs.url }}"
+          echo "Service URL: ${{ steps.deploy.outputs.url }}"
           echo "Image: ${{ steps.build.outputs.image }}"
-          echo "Note: Traffic is at 0% pending vulnerability scan."
-          echo "Open traffic via GCP Console after scan passes."
-          echo "========================================="
