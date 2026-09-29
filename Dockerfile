@@ -1,5 +1,6 @@
 FROM nginx:stable-alpine
-RUN apk upgrade --no-cache libssl3 libcrypto3 expat libxml2 curl c-ares util-linux
+# Upgrade everything: libraries ship as separate packages (libexpat, libcurl, libuuid...)
+RUN apk upgrade --no-cache
 COPY . /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080
