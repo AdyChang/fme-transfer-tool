@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>庫存調撥系統</title>
+<script>
+// 未登入直接跳回 login.html（在任何渲染前執行）
+(function() {
+  try {
+    var s = sessionStorage.getItem('fme_transfer_user');
+    if (!s) { window.location.replace('login.html'); }
+  } catch(_) {}
+})();
+</script>
 <script src="/vendor/xlsx-0.20.3.full.min.js"></script>
 <style>
 :root {
@@ -416,7 +425,9 @@ tbody td {
   </div>
   <div class="header-right">
     <span class="storage-badge" id="storage-badge">未載入參數</span>
+    <span class="storage-badge" id="user-badge" style="color:rgba(255,255,255,0.75)"></span>
     <button class="btn-ghost" onclick="clearStoredParams()">🗑 清除已儲存參數</button>
+    <button class="btn-ghost" onclick="doLogout()" style="border-color:rgba(255,100,100,0.4);color:rgba(255,180,180,0.9)">登出</button>
   </div>
 </header>
 
@@ -1421,6 +1432,23 @@ function closeModal() {
 // Init
 // ────────────────────────────────────────────
 updateStorageBadge();
+
+// ── Auth ──
+(function() {
+  try {
+    var s = sessionStorage.getItem('fme_transfer_user');
+    if (s) {
+      var u = JSON.parse(s);
+      var badge = document.getElementById('user-badge');
+      if (badge && u.userId) badge.textContent = '👤 ' + u.userId;
+    }
+  } catch(_) {}
+})();
+
+function doLogout() {
+  try { sessionStorage.removeItem('fme_transfer_user'); } catch(_) {}
+  window.location.replace('login.html');
+}
 </script>
 </body>
 </html>
